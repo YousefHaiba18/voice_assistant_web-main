@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Voice Assistant - Multi Device</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 2em;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+            margin: 0;
+        }
+        
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2em;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+        
+        h2 {
+            margin-bottom: 1.5em;
+            font-size: 1.8em;
+        }
+        
+        .setup-section {
+            margin-bottom: 2em;
+            padding: 1.5em;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+        
+        input, select, button {
+            font-size: 1.1em;
+            padding: 0.8em 1.2em;
+            margin: 0.5em;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.9);
+            color: #333;
+        }
+        
+        button {
+            background: #4CAF50;
+            color: white;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        .recording-controls {
+            display: none;
+        }
+        
+        .speaker-controls {
+            display: none;
+        }
+        
+        #recordBtn {
+            font-size: 1.3em;
+            padding: 1em 2em;
+            margin-top: 1em;
+            background: #ff4757;
+        }
+        
+        #recordBtn:hover {
+            background: #ff3742;
+        }
+        
+        #status {
+            margin-top: 1em;
+            font-size: 1.1em;
+            font-weight: bold;
+        }
+        
+        .room-info {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 1em;
+            border-radius: 8px;
+            margin: 1em 0;
+        }
+        
+        .transcript {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 1em;
+            border-radius: 8px;
+            margin: 1em 0;
+            font-style: italic;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h2>🎙️ Voice Assistant - Multi Device</h2>
+        
+        <div class="setup-section" id="setupSection">
+            <h3>Device Setup</h3>
+            <div>
+                <input type="text" id="roomId" placeholder="Room ID (e.g., room123)" value="room123">
+            </div>
+            <div>
+                <select id="deviceType">
+                    <option value="microphone">📱 Microphone Device</option>
+                    <option value="speaker">🔊 Speaker Device</option>
+                </select>
+            </div>
+            <button onclick="joinRoom()">Join Room</button>
+            <p id="setupStatus"></p>
+        </div>
+        
+        <div class="recording-controls" id="recordingControls">
+            <div class="room-info">
+                <p>Room: <span id="currentRoom"></span></p>
+                <p>Connected: <span id="deviceCount"></span></p>
+            </div>
+            <button id="recordBtn">▶️ Start Recording</button>
+            <p id="status"></p>
+            <div id="transcript" class="transcript" style="display: none;"></div>
+        </div>
+        
+        <div class="speaker-controls" id="speakerControls">
+            <div class="room-info">
+                <p>Room: <span id="speakerRoom"></span></p>
+                <p>Connected: <span id="speakerDeviceCount"></span></p>
+                <p>Status: <span id="speakerStatus">Waiting for audio...</span></p>
+            </div>
+            <div id="speakerTranscript" class="transcript" style="display: none;"></div>
+        </div>
+    </div>
+
+    <script>
+        let socket;
+        let currentRoom = '';
+        let deviceType = '';
+        let isRecording = false;
+        let mediaRecorder;
+        let audioChunks = [];
+        let stream;
+        let audioContext;
+        let isAudioEnabled = false;
+        let lastUserInteraction = 0;
+        
+        function joinRoom() {
+            const roomId = document.getElementById('roomId').value.trim();
+            const selectedDeviceType = document.getElementById('deviceType').value;
+            
+            if (!roomId) {
+                document.getElementById('setupStatus').textContent = 'Please enter a room ID';
+                return;
+            }
+            
+            currentRoom = roomId;
+            deviceType = selectedDeviceType;
+            
+            // Initialize socket connection
+            socket = io();
+            
+            socket.emit('join_room', {
+                room_id: roomId,
+                device_type: selectedDeviceType
+            });
+            
+            socket.on('room_status', (data) => {
+                const deviceCountText = `${data.microphones} mics, ${data.speakers} speakers`;
+                document.getElementById('deviceCount').textContent = deviceCountText;
+                document.getElementById('speakerDeviceCount').textContent = deviceCountText;
+            });
+            
+            socket.on('play_audio', (data) => {
+                if (deviceType === 'speaker') {
+                    playAudioData(data.audio_data, data.transcript);
+                }
+            });
+            
+            // Hide setup, show appropriate controls
+            document.getElementById('setupSection').style.display = 'none';
+            
+            if (selectedDeviceType === 'microphone') {
+                document.getElementById('recordingControls').style.display = 'block';
+                document.getElementById('currentRoom').textContent = roomId;
+                initMicrophone();
+            } else {
+                document.getElementById('speakerControls').style.display = 'block';
+                document.getElementById('speakerRoom').textContent = roomId;
+                initSpeaker();
+            }
+            
+            document.getElementById('setupStatus').textContent = `Connected as ${selectedDeviceType} to room ${roomId}`;
+        }
+        
+        async function initMicrophone() {
+            const recordBtn = document.getElementById("recordBtn");
+            const statusText = document.getElementById("status");
+            
+            recordBtn.onclick = async () => {
+                if (!isRecording) {
+                    const micOk = await initMic();
+                    if (!micOk) return;
+                    
+                    statusText.textContent = "🎤 Recording...";
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+                    
+                    mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
+                    mediaRecorder.start();
+                    isRecording = true;
+                    recordBtn.textContent = "⏹ Stop Recording";
+                } else {
+                    mediaRecorder.stop();
+                    statusText.textContent = "⏳ Processing...";
+                    isRecording = false;
+                    recordBtn.textContent = "▶️ Start Recording";
+                    
+                    mediaRecorder.onstop = async () => {
+                        const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
+                        const formData = new FormData();
+                        formData.append("audio", audioBlob, "recording.wav");
+                        formData.append("room_id", currentRoom);
+                        
+                        try {
+                            const response = await fetch("/upload", {
+                                method: "POST",
+                                body: formData
+                            });
+                            
+                            const result = await response.json();
+                            statusText.textContent = "✅ Audio sent to speakers";
+                            
+                            // Show transcript on microphone device
+                            const transcriptDiv = document.getElementById('transcript');
+                            transcriptDiv.textContent = `Transcript: "${result.transcript}"`;
+                            transcriptDiv.style.display = 'block';
+                            
+                        } catch (error) {
+                            statusText.textContent = "❌ Error processing audio";
+                            console.error("Upload error:", error);
+                        }
+                    };
+        }
+        
+        function initSpeaker() {
+            // Create a large invisible overlay that captures any touch/click
+            const interactionOverlay = document.createElement('div');
+            interactionOverlay.style.position = 'fixed';
+            interactionOverlay.style.top = '0';
+            interactionOverlay.style.left = '0';
+            interactionOverlay.style.width = '100%';
+            interactionOverlay.style.height = '100%';
+            interactionOverlay.style.zIndex = '1000';
+            interactionOverlay.style.background = 'rgba(255, 107, 107, 0.9)';
+            interactionOverlay.style.display = 'flex';
+            interactionOverlay.style.alignItems = 'center';
+            interactionOverlay.style.justifyContent = 'center';
+            interactionOverlay.style.flexDirection = 'column';
+            interactionOverlay.style.color = 'white';
+            interactionOverlay.style.fontSize = '1.3em';
+            interactionOverlay.style.textAlign = 'center';
+            interactionOverlay.style.padding = '20px';
+            
+            interactionOverlay.innerHTML = `
+                <h3>🔊 Enable Auto-Play Audio</h3>
+                <p>Tap anywhere on this screen to enable automatic audio playback</p>
+                <p style="font-size: 0.9em; opacity: 0.8;">(Required by iOS - only needed once per session)</p>
+            `;
+            
+            const enableAudio = () => {
+                // Initialize audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Resume audio context if it's suspended
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+                
+                // Play a very short silent audio to unlock iOS audio
+                const buffer = audioContext.createBuffer(1, 1, 22050);
+                const source = audioContext.createBufferSource();
+                source.buffer = buffer;
+                source.connect(audioContext.destination);
+                source.start();
+                
+                // Also create a traditional Audio element and play it
+                const silentAudio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmcfCz2Y0+/PfC8GLYjM8tiMPAkUZLXs3JtyWQsLQ5zF4K1rIwU9kNPxynEqBSyBzvLYiTcIGWi77eefTBAMUKfj8LZjHAY4kdfyzHksBSR3x/DdkEAKFF606eunVRQKRp/g8r5nHws9mNPvz3wvBi2IzPLYjDwJFGS17NybclkLC0OcxeCtayMFPZDT8cpxKgUsgc7y2Ik3CBlou+3nn0wQDFCn4/C2YxwGOJHX8sx5LAUkd8fw3ZBACRRN');
+                silentAudio.volume = 0;
+                silentAudio.play().catch(() => {});
+                
+                isAudioEnabled = true;
+                lastUserInteraction = Date.now();
+                document.getElementById('speakerStatus').textContent = '✅ Auto-play enabled - Ready for audio';
+                interactionOverlay.remove();
+                
+                // Add ongoing interaction tracking
+                document.addEventListener('touchstart', refreshInteraction, { passive: true });
+                document.addEventListener('click', refreshInteraction, { passive: true });
+            };
+            
+            interactionOverlay.addEventListener('click', enableAudio);
+            interactionOverlay.addEventListener('touchstart', enableAudio, { passive: true });
+            
+            document.body.appendChild(interactionOverlay);
+        }
+        
+        function refreshInteraction() {
+            lastUserInteraction = Date.now();
+            // Resume audio context if needed
+            if (audioContext && audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+        }
+                }
+            };
+        
+        
+        async function initMic() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                console.log("Mic access granted");
+                return true;
+            } catch (err) {
+                document.getElementById("status").textContent = "❌ Microphone permission denied.";
+                console.error("Mic error:", err);
+                return false;
+            }
+        }
+        
+        function playAudioData(audioData, transcript) {
+            try {
+                // Check if we have recent user interaction (within last 30 seconds)
+                const timeSinceInteraction = Date.now() - lastUserInteraction;
+                const hasRecentInteraction = timeSinceInteraction < 30000;
+                
+                if (!isAudioEnabled || !hasRecentInteraction) {
+                    createInteractionPrompt(audioData, transcript);
+                    return;
+                }
+                
+                // Convert base64 to blob and play
+                const byteCharacters = atob(audioData);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const audioBlob = new Blob([byteArray], { type: 'audio/mpeg' });
+                
+                const audioURL = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioURL);
+                
+                // Show transcript on speaker device
+                const transcriptDiv = document.getElementById('speakerTranscript');
+                transcriptDiv.textContent = `Playing: "${transcript}"`;
+                transcriptDiv.style.display = 'block';
+                
+                // Set audio properties for better playback
+                audio.preload = 'auto';
+                audio.volume = 1.0;
+                
+                document.getElementById('speakerStatus').textContent = '🔊 Playing response...';
+                
+                const playPromise = audio.play();
+                
+                if (playPromise !== undefined) {
+                    playPromise.then(() => {
+                        console.log('Audio auto-playing successfully');
+                    }).catch((error) => {
+                        console.error('Auto-play failed:', error);
+                        createInteractionPrompt(audioData, transcript);
+                    });
+                }
+                
+                audio.onended = () => {
+                    document.getElementById('speakerStatus').textContent = 'Waiting for audio...';
+                    URL.revokeObjectURL(audioURL);
+                };
+                
+                audio.onerror = (e) => {
+                    console.error('Audio error:', e);
+                    document.getElementById('speakerStatus').textContent = '❌ Audio format error';
+                    URL.revokeObjectURL(audioURL);
+                };
+                
+            } catch (error) {
+                console.error('Error in playAudioData:', error);
+                document.getElementById('speakerStatus').textContent = '❌ Error processing audio';
+            }
+        }
+        
+        function createInteractionPrompt(audioData, transcript) {
+            // Create a full-screen tap prompt
+            const prompt = document.createElement('div');
+            prompt.style.position = 'fixed';
+            prompt.style.top = '0';
+            prompt.style.left = '0';
+            prompt.style.width = '100%';
+            prompt.style.height = '100%';
+            prompt.style.background = 'rgba(76, 175, 80, 0.95)';
+            prompt.style.zIndex = '2000';
+            prompt.style.display = 'flex';
+            prompt.style.alignItems = 'center';
+            prompt.style.justifyContent = 'center';
+            prompt.style.flexDirection = 'column';
+            prompt.style.color = 'white';
+            prompt.style.fontSize = '1.4em';
+            prompt.style.textAlign = 'center';
+            prompt.style.padding = '20px';
+            prompt.style.animation = 'pulse 1s infinite';
+            
+            prompt.innerHTML = `
+                <div style="background: rgba(255,255,255,0.1); padding: 30px; border-radius: 20px;">
+                    <h2>🎵 Audio Ready!</h2>
+                    <p>Tap anywhere to play:</p>
+                    <p style="font-style: italic; font-size: 0.9em; margin: 20px 0;">"${transcript}"</p>
+                    <p style="font-size: 0.8em; opacity: 0.8;">Tap the screen to play audio</p>
+                </div>
+            `;
+            
+            // Add pulse animation
+            const style = document.createElement('style');
+            style.textContent = `
+                @keyframes pulse {
+                    0% { opacity: 0.8; }
+                    50% { opacity: 1; }
+                    100% { opacity: 0.8; }
+                }
+            `;
+            document.head.appendChild(style);
+            
+            const playAudio = () => {
+                // Refresh interaction timestamp
+                lastUserInteraction = Date.now();
+                
+                // Convert and play audio
+                const byteCharacters = atob(audioData);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const audioBlob = new Blob([byteArray], { type: 'audio/mpeg' });
+                
+                const audioURL = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioURL);
+                audio.volume = 1.0;
+                
+                audio.play().then(() => {
+                    document.getElementById('speakerStatus').textContent = '🔊 Playing response...';
+                    prompt.remove();
+                    style.remove();
+                }).catch(() => {
+                    document.getElementById('speakerStatus').textContent = '❌ Audio playback failed';
+                    prompt.remove();
+                    style.remove();
+                });
+                
+                audio.onended = () => {
+                    document.getElementById('speakerStatus').textContent = 'Waiting for audio...';
+                    URL.revokeObjectURL(audioURL);
+                };
+            };
+            
+            prompt.addEventListener('click', playAudio);
+            prompt.addEventListener('touchstart', playAudio, { passive: true });
+            
+            document.body.appendChild(prompt);
+            document.getElementById('speakerStatus').textContent = '👆 Tap screen to play audio';
+        }
+    </script>
+</body>
+</html>
