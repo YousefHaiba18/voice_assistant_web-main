@@ -83,7 +83,7 @@ async def text_to_speech(text):
 @socketio.on('join_room')
 def on_join(data):
     room_id = data['room_id']
-    device_type = data['device_type']  # 'microphone' or 'speaker'
+    device_type = data['device_type']  # 'microphone' or 'speakers'
     
     join_room(room_id)
     
